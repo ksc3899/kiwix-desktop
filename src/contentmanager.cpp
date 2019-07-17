@@ -123,7 +123,11 @@ QStringList ContentManager::updateDownloadInfos(QString id, const QStringList &k
         b.setPath(QDir::toNativeSeparators(tmp).toStdString());
         b.setDownloadId("");
         mp_library->save();
-        emit(mp_library->booksChanged());
+        if (!m_local) {
+            emit(oneBookChanged(id));
+        } else {
+            emit(mp_library->booksChanged());
+        }
     }
     for(auto& key: keys){
         ADD_V("id", getDid);
@@ -194,7 +198,7 @@ QString ContentManager::downloadBook(const QString &id)
     book.setDownloadId(download->getDid());
     mp_library->addBookToLibrary(book);
     mp_library->save();
-    emit(mp_library->booksChanged());
+    emit(oneBookChanged(id));
     return QString::fromStdString(download->getDid());
 }
 
@@ -214,7 +218,11 @@ void ContentManager::eraseBook(const QString& id)
     eraseBookFilesFromComputer(fileToRemove);
     mp_library->removeBookFromLibraryById(id);
     mp_library->save();
-    emit(mp_library->booksChanged());
+    if (m_local) {
+        emit(bookRemoved(id));
+    } else {
+        emit(oneBookChanged(id));
+    }
 }
 
 void ContentManager::pauseBook(const QString& id)
@@ -237,12 +245,14 @@ void ContentManager::cancelBook(const QString& id)
 {
     auto& b = mp_library->getBookById(id);
     auto download = mp_downloader->getDownload(b.getDownloadId());
-    download->cancelDownload();
+    if (download->getStatus() != kiwix::Download::K_COMPLETE) {
+        download->cancelDownload();
+    }
     QString fileToRemove = QString::fromUtf8(getLastPathElement(download->getPath()).c_str()) + "*";
     eraseBookFilesFromComputer(fileToRemove);
     mp_library->removeBookFromLibraryById(id);
     mp_library->save();
-    emit(mp_library->booksChanged());
+    emit(oneBookChanged(id));
 }
 
 QStringList ContentManager::getDownloadIds()
@@ -303,12 +313,32 @@ void ContentManager::setSearch(const QString &search)
     emit(booksChanged());
 }
 
-QStringList ContentManager::getBookIds() {
+QStringList ContentManager::getBookIds()
+{
+    kiwix::Filter filter;
+    std::vector<std::string> tags;
+    if (m_categoryFilter != "all" && m_categoryFilter != "other") {
+        tags.push_back(m_categoryFilter.toStdString());
+        filter.acceptTags(tags);
+    }
+    if (m_categoryFilter == "other") {
+        auto categoryList = KiwixApp::instance()->getMainWindow()->getSideContentManager()->getCategoryList();
+        for (auto& category: categoryList) {
+            if (category != "Other") {
+                tags.push_back(category.toLower().toStdString());
+            }
+        }
+        filter.rejectTags(tags);
+    }
+    filter.query(m_searchQuery.toStdString());
+    
     if (m_local) {
-        return mp_library->listBookIds(m_searchQuery, m_categoryFilter);
+        filter.local(true);
+        filter.valid(true);
+        return mp_library->listBookIds(filter);
     } else {
-        auto bookIds = m_remoteLibrary.listBooksIds(kiwix::REMOTE, kiwix::UNSORTED,
-                                                    m_searchQuery.toStdString());
+        filter.remote(true);
+        auto bookIds = m_remoteLibrary.filter(filter);
         QStringList list;
         for(auto& bookId:bookIds) {
             list.append(QString::fromStdString(bookId));
